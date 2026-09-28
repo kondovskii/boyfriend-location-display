@@ -18,6 +18,26 @@ DATA_FILE = os.path.join(os.path.dirname(__file__), "latest_location.json")
 # Set a real secret before deploying: export LOCATION_SECRET="something-long-and-random"
 SHARED_SECRET = os.environ.get("LOCATION_SECRET", "change-me")
 
+# How old a location can be before we consider it stale / offline
+STALE_AFTER_SECONDS = int(os.environ.get("STALE_AFTER_SECONDS", 600))     # 10 min
+OFFLINE_AFTER_SECONDS = int(os.environ.get("OFFLINE_AFTER_SECONDS", 1800))  # 30 min
+
+
+def classify_status(timestamp_str: str) -> tuple[str, float]:
+    """Returns (status, seconds_since_update) for a stored ISO timestamp."""
+    last_update = datetime.fromisoformat(timestamp_str)
+    seconds_elapsed = (datetime.now(timezone.utc) - last_update).total_seconds()
+
+    if seconds_elapsed <= STALE_AFTER_SECONDS:
+        status = "live"
+    elif seconds_elapsed <= OFFLINE_AFTER_SECONDS:
+        status = "stale"
+    else:
+        status = "offline"
+
+    return status, seconds_elapsed
+
+
 
 @app.route("/location", methods=["POST"])
 def update_location():
@@ -52,7 +72,23 @@ def get_location():
 
     with open(DATA_FILE) as f:
         return jsonify(json.load(f)), 200
+@app.route("/status", methods=["GET"])
+def get_status():
+    if not os.path.exists(DATA_FILE):
+        return jsonify({"status": "offline", "reason": "no location received yet"}), 200
 
+    with open(DATA_FILE) as f:
+        location = json.load(f)
+
+    status, seconds_elapsed = classify_status(location["timestamp"])
+
+    return jsonify({
+        "status": status,
+        "seconds_since_update": round(seconds_elapsed),
+        "lat": location["lat"],
+        "lon": location["lon"],
+        "timestamp": location["timestamp"],
+    }), 200
 
 if __name__ == "__main__":
     # 0.0.0.0 so it's reachable from other devices on the network, not just localhost
