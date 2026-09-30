@@ -4,18 +4,31 @@ A desk display that shows a live map of where my boyfriend is, sourced from
 his iPhone via an iOS Shortcuts automation. Built on a Raspberry Pi 4B with
 a DSI touchscreen, a WS2812B LED strip, and a speaker for status reactions.
 
-This repo currently covers **Step 1: the location pipeline** — his phone
-posts coordinates to a small server running on the Pi, which stores the
-latest one for the display to poll.
-
 ## How it works
 
-1. An iOS Shortcuts automation on his phone runs on a schedule (or on
-   location change) and POSTs his current coordinates to the Pi.
+1. An iOS Shortcuts automation on his phone runs on a schedule and POSTs
+   his current coordinates to the Pi.
 2. A Flask server on the Pi (`server/app.py`) receives the POST, checks a
-   shared secret, and saves the latest `{lat, lon, timestamp}` to disk.
-3. Anything else on the Pi (the map renderer, the display loop) can `GET`
-   the latest location from the same server.
+   shared secret, and saves the latest `{lat, lon, timestamp}` to disk. It
+   also exposes a `/status` endpoint that classifies the location as
+   `live`, `stale`, or `offline` based on how long ago it was updated.
+3. `display/render_map.py` polls the server and draws a map image with a
+   marker at his location.
+4. `display/show_display.py` shows that map fullscreen on the touchscreen
+   and reloads it whenever it changes.
+5. `leds/status_reactor.py` polls `/status` and drives the LED strip +
+   speaker: green when live, amber when stale, red plus an alert tone the
+   moment it goes offline.
+6. `scripts/run_all.sh` starts all of the above together with one command.
+
+## Repo layout
+
+```
+server/     Flask server: receives locations, serves /location and /status
+display/    Map rendering + fullscreen touchscreen viewer
+leds/       WS2812B + speaker reactions to location status
+scripts/    Convenience script to launch everything at once
+```
 
 ## 1. Set up the server on the Pi
 
@@ -44,10 +57,14 @@ curl -X POST http://<pi-ip>:5050/location \
 
 # read it back
 curl http://<pi-ip>:5050/location
+
+# check the derived status
+curl http://<pi-ip>:5050/status
 ```
 
-You should get back the same coordinates with a timestamp attached. Don't
-move on to the Shortcuts step until this round-trip works.
+You should get back the same coordinates with a timestamp attached, and
+`/status` should say `"status": "live"`. Don't move on to the Shortcuts
+step until this round-trip works.
 
 ## 3. Make the server reachable from outside your home network
 
@@ -73,14 +90,9 @@ with it later.
 
 1. Open **Shortcuts** → **Automation** tab → **+** → **Create Personal
    Automation**.
-2. Trigger: choose **Time of Day** (repeat every X minutes isn't natively
-   supported, so most people use **"Time of Day"** repeated, or trigger
-   off **"When I Arrive/Leave"** a location — for continuous tracking,
-   a lightweight alternative is a **Time of Day** automation set to run
-   every 15–30 minutes via the Shortcuts app's repeat option, or use the
-   **"When Charger Connected/Disconnected"** trick some builds use — for a
-   first version, start with a manual **Home Screen icon / widget** you
-   both tap, then automate later once the pipeline works).
+2. Trigger: **Time of Day**, repeating every 15–30 minutes. For a first
+   version, a manual Home Screen shortcut you both tap works too —
+   automate it once the pipeline is confirmed working.
 3. Add action: **Get Current Location**.
 4. Add action: **Get Contents of URL**
    - URL: `http://<your-tailscale-or-public-address>:5050/location`
@@ -96,13 +108,45 @@ with it later.
      ```
 5. Turn off **"Ask Before Running"** so it fires silently.
 
-Test it by running the shortcut manually first (tap it in the Shortcuts
-app) and confirming `curl http://<pi-ip>:5050/location` reflects his real
-coordinates.
+Test it by running the shortcut manually first, then confirming
+`curl http://<pi-ip>:5050/location` reflects his real coordinates.
+
+## 5. Render and display the map
+
+```bash
+cd display
+pip3 install -r requirements.txt --break-system-packages
+python3 render_map.py --loop --interval 60   # keeps redrawing map.png
+python3 show_display.py                       # shows it fullscreen, auto-reloads
+```
+
+Use `python3 show_display.py --windowed` to preview in a normal window
+before deploying to the touchscreen.
+
+## 6. Wire up the LED strip and speaker reactions
+
+```bash
+cd leds
+pip3 install -r requirements.txt --break-system-packages
+sudo python3 status_reactor.py
+```
+
+Requires the WS2812B strip on GPIO18 and the MAX98357A amp set up as the
+default ALSA output (I2S overlay enabled in `/boot/config.txt`). Adjust
+`LED_COUNT` in `status_reactor.py` to match your actual strip length.
+
+## 7. Run everything at once
+
+```bash
+export LOCATION_SECRET="pick-something-long-and-random"
+chmod +x scripts/run_all.sh   # first time only
+./scripts/run_all.sh
+```
+
+Starts the server, renderer, display, and LED/speaker reactor together;
+`Ctrl+C` stops all of them.
 
 ## Next steps
 
-- Render the coordinates on a map image (`staticmap` or similar)
-- Poll `/location` from a Tkinter fullscreen loop on the touchscreen
-- Flag "stale" location (no update past a threshold) to drive the LED/
-  speaker reactions
+- Enclosure / final assembly
+- Content video
