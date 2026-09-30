@@ -1,0 +1,4 @@
+rpi_ws281x
+sounddevice
+numpy
+requests
